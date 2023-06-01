@@ -1,7 +1,9 @@
 //SPDX-License-Identifier:MIT
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-pragma solidity ^0.8.4;
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+pragma solidity ^0.8.12;
 contract P2Plending{
+    using SafeMath for uint256;
     struct loanListings {
     address lenderAddress;
     uint loanAmount;
@@ -20,11 +22,12 @@ mapping (uint=>loanListings) public loan;
 uint loanNo;
 uint protocolFee;
 address public owner;
-uint currentPrice;
-uint currentCollateralPrice = SafeMath.mul(loan[loanNo].collateralReceived, currentPrice);
-uint collateralAmount = SafeMath.div(SafeMath.mul(loan[loanNo].loanAmount, loan[loanNo].collateralRatio), 100);
-uint roiAmount = SafeMath.div(SafeMath.mul(SafeMath.mul(loan[loanNo].loanAmount, loan[loanNo].roi), SafeMath.div(block.number - loan[loanNo].borrowedDate, 31536000)), 100); //365 days = 31536000 seconds
-uint protocolFeeAmount = SafeMath.div(SafeMath.mul(loan[loanNo].loanAmount, protocolFee), 100);
+ struct TokenPrice {
+        AggregatorV3Interface priceFeed;
+        string symbol;
+    }    
+
+    TokenPrice[] public tokenD;
 event loanListed(uint loanNo, address lenderAddress, uint loanAmount, uint roi, uint collateralRatio, uint timePeriod, uint liquidationRatio);
 event loanBorrowed(uint  loanNo, address borrowerAddress, uint collateralAmount, uint borrowedDate, uint liquidationAmount);
 event loanRepaid(uint  loanNo, address  borrowerAddress, uint loanAmount, uint roiAmount, uint protocolFeeAmount, uint totalRepayed);
@@ -36,6 +39,9 @@ event collateralIncreased(uint  loanNo, address  borrowerAddress, uint addedColl
 constructor() payable {
     owner = msg.sender;
     protocolFee = msg.value;
+     tokenD.push(TokenPrice(AggregatorV3Interface(0x694AA1769357215DE4FAC081bf1f309aDC325306), "ETH"));
+        tokenD.push(TokenPrice(AggregatorV3Interface(0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43), "BTC"));
+        tokenD.push(TokenPrice(AggregatorV3Interface(0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E), "USDC")); // Add more tokens here
 }
 modifier onlyOwner {
     require(msg.sender == owner, "Only owner can call this function.");
@@ -65,7 +71,9 @@ function borrow(uint _loanNo) public payable{
     require(msg.value > 0, "Invalid amount entered");
     require(msg.sender != loan[_loanNo].lenderAddress, "lender can not borrow his loan");
     require(loan[_loanNo].isActive == true, "This loan is already taken");
-    require(msg.value>= collateralAmount,"Insufficient collateral");
+    uint currentPrice;
+    uint collateralAmount = SafeMath.div(SafeMath.mul(loan[loanNo].loanAmount, loan[loanNo].collateralRatio), 100);
+    require(msg.value >= collateralAmount,"Insufficient collateral");
     payable(msg.sender).transfer(loan[_loanNo].loanAmount);
     loan[_loanNo].collateralReceived = msg.value;
     loan[_loanNo].borrowedDate = block.number;
@@ -75,10 +83,12 @@ function borrow(uint _loanNo) public payable{
     emit loanBorrowed(_loanNo, msg.sender, msg.value, block.number, loan[_loanNo].liquidationAmount);
 }
 function repay(uint _loanNo) public payable {
+    uint roiAmount = SafeMath.div(SafeMath.mul(SafeMath.mul(loan[loanNo].loanAmount, loan[loanNo].roi), SafeMath.div(block.number - loan[loanNo].borrowedDate, 31536000)), 100); //365 days = 31536000 seconds
+    uint protocolFeeAmount = SafeMath.div(SafeMath.mul(loan[loanNo].loanAmount, protocolFee), 100);
     require(_loanNo >= 0, "Invalid loan number");
     require(msg.value > 0, "Invalid amount entered");
-    require(msg.sender==loan[_loanNo].borrowerAddress,"You did not borrow this loan");
-    require(msg.value== loan[_loanNo].loanAmount+(roiAmount)+(protocolFeeAmount),"Funds should match the Required amount");
+    require(msg.sender == loan[_loanNo].borrowerAddress,"You did not borrow this loan");
+    require(msg.value == loan[_loanNo].loanAmount+(roiAmount)+(protocolFeeAmount),"Funds should match the Required amount");
     
     payable(msg.sender).transfer(loan[_loanNo].collateralReceived);
     loan[_loanNo].isActive=true;
@@ -100,7 +110,9 @@ function changeProtocolFee(uint _newFee) public onlyOwner {
 }
 function liquidate(uint _loanNo) public {
     require(_loanNo >= 0, "Invalid loan number");
-    
+    uint currentPrice;
+    uint currentCollateralPrice = SafeMath.mul(loan[loanNo].collateralReceived, currentPrice);
+    uint roiAmount = SafeMath.div(SafeMath.mul(SafeMath.mul(loan[loanNo].loanAmount, loan[loanNo].roi), SafeMath.div(block.number - loan[loanNo].borrowedDate, 31536000)), 100); //365 days = 31536000 seconds
     require(loan[_loanNo].isActive == false, "Loan is not active.");
     require(msg.sender == loan[_loanNo].lenderAddress, "Only lender can call this function.");
     
@@ -111,8 +123,9 @@ function liquidate(uint _loanNo) public {
     loan[_loanNo].borrowerAddress = address(0);
     emit loanLiquidated(_loanNo, msg.sender, loan[_loanNo].liquidationAmount, roiAmount, block.number, loan[_loanNo].loanAmount + (roiAmount) );
 }
-using SafeMath for uint256;
 function withdrawCollateral(uint _loanNo) public payable {
+    uint currentPrice;
+    uint currentCollateralPrice = SafeMath.mul(loan[loanNo].collateralReceived, currentPrice);
     require(_loanNo >= 0, "Invalid loan number");
     require(msg.value > 0, "Amount not entered");
     require(loan[_loanNo].isActive == false, "Loan is not active.");
@@ -132,4 +145,10 @@ function increaseCollateral(uint _loanNo) public payable {
     loan[_loanNo].collateralReceived += msg.value;
     emit collateralIncreased(_loanNo, msg.sender, msg.value);
 }
+function getLatestPrice(uint256 tokenId) public view returns (int256) {
+        require(tokenId < tokenD.length, "Invalid token ID");
+
+        (, int256 price, , , ) = tokenD[tokenId].priceFeed.latestRoundData();
+        return price;
+    }
 }
